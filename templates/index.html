@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibra — memory for consistent judgment</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <h1>Calibra</h1>
+    <p class="deck">The memory layer for consistent human judgment.</p>
+    <div class="pitch-strip">
+      <div class="pitch-item">
+        <span class="pitch-label">Problem</span>
+        <span class="pitch-text">Human reviewers silently disagree — nobody catches it until it's cost you a deal, a grade, or an audit finding.</span>
+      </div>
+      <div class="pitch-item">
+        <span class="pitch-label">What memory does here</span>
+        <span class="pitch-text">Every score is grounded in retained reviewer history, not a static rubric — and gets sharper every time an outcome is recorded.</span>
+      </div>
+      <div class="pitch-item">
+        <span class="pitch-label">Who pays for this</span>
+        <span class="pitch-text">Any org with distributed human graders: legal review, academic publishing, hiring panels, compliance audits.</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="intake">
+    <label for="submission">Submission to evaluate</label>
+    <textarea id="submission" rows="7" placeholder="Paste a legal writing submission here…"></textarea>
+
+    <div class="demo-picks">
+      <span class="demo-label">Or try a seeded example:</span>
+      {% for s in demo_submissions %}
+      <button class="demo-pick" data-text="{{ s.text }}">{{ s.title }}</button>
+      {% endfor %}
+    </div>
+
+    <button id="run" class="run-btn">Predict reviewer scores</button>
+  </section>
+
+  <section id="results" class="results hidden">
+    <div class="docket">
+      {% for r in reviewers %}
+      <div class="reviewer-col" data-slug="{{ r.slug }}">
+        <div class="reviewer-head">
+          <h2>{{ r.name }}</h2>
+          <div class="score-badge">
+            <span class="score-num">—</span><span class="score-den">/10</span>
+          </div>
+        </div>
+        <p class="confidence"></p>
+        <p class="memory-meter">Memory: <span class="memory-count">{{ memory_counts[r.slug] }}</span> retained reviews</p>
+        <p class="feedback"></p>
+        <details class="grounding">
+          <summary>What memory this is grounded in</summary>
+          <ul class="grounding-list"></ul>
+        </details>
+
+        <div class="fingerprint-block">
+          <button class="fingerprint-btn">Reflect: synthesize {{ r.name.split(' ')[0] }}'s fingerprint</button>
+          <p class="fingerprint-text"></p>
+        </div>
+
+        <div class="outcome-form">
+          <p class="outcome-label">What did {{ r.name.split(' ')[0] }} actually score this?</p>
+          <div class="outcome-row">
+            <input type="number" class="outcome-score" min="1" max="10" step="0.5" placeholder="e.g. 5">
+            <input type="text" class="outcome-note" placeholder="Why (optional)">
+            <button class="outcome-submit">Record outcome</button>
+          </div>
+          <p class="outcome-status"></p>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div id="disagreement" class="disagreement hidden">
+      <div class="disagreement-mark">⚠</div>
+      <div class="disagreement-body">
+        <p class="disagreement-gap"></p>
+        <p class="disagreement-explanation"></p>
+      </div>
+    </div>
+  </section>
+
+  <p id="status" class="status"></p>
+</main>
+
+<footer>
+  <p>Built on Hindsight — every score above is grounded in retained reviewer memory, not a static rubric. Recording an outcome writes it straight back into that reviewer's memory bank.</p>
+</footer>
+
+<script>
+const runBtn = document.getElementById('run');
+const submissionEl = document.getElementById('submission');
+const resultsEl = document.getElementById('results');
+const statusEl = document.getElementById('status');
+const disagreementEl = document.getElementById('disagreement');
+
+let currentSubmissionText = '';
+
+document.querySelectorAll('.demo-pick').forEach(btn => {
+  btn.addEventListener('click', () => {
+    submissionEl.value = btn.dataset.text;
+  });
+});
+
+runBtn.addEventListener('click', async () => {
+  const text = submissionEl.value.trim();
+  if (!text) { statusEl.textContent = 'Paste a submission first.'; return; }
+  currentSubmissionText = text;
+
+  runBtn.disabled = true;
+  statusEl.textContent = 'Recalling reviewer memory and predicting…';
+  resultsEl.classList.add('hidden');
+  disagreementEl.classList.add('hidden');
+
+  try {
+    const res = await fetch('/api/predict', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({submission_text: text})
+    });
+    const data = await res.json();
+    if (data.error) { statusEl.textContent = data.error; return; }
+
+    document.querySelectorAll('.reviewer-col').forEach((col, i) => {
+      const p = data.predictions[i];
+      if (!p) return;
+      col.querySelector('.score-num').textContent = p.predicted_score ?? '?';
+      col.querySelector('.confidence').textContent = `Confidence: ${p.confidence}`;
+      col.querySelector('.feedback').textContent = p.feedback;
+      col.querySelector('.outcome-status').textContent = '';
+      col.querySelector('.outcome-score').value = '';
+      col.querySelector('.outcome-note').value = '';
+      const list = col.querySelector('.grounding-list');
+      list.innerHTML = '';
+      (p.recalled_memories || []).forEach(m => {
+        const li = document.createElement('li');
+        li.textContent = m;
+        list.appendChild(li);
+      });
+    });
+
+    if (data.disagreement) {
+      disagreementEl.classList.remove('hidden');
+      disagreementEl.querySelector('.disagreement-gap').textContent =
+        `Predicted score gap: ${data.disagreement.gap} points`;
+      disagreementEl.querySelector('.disagreement-explanation').textContent =
+        data.disagreement.explanation;
+    }
+
+    resultsEl.classList.remove('hidden');
+    statusEl.textContent = '';
+  } catch (err) {
+    statusEl.textContent = 'Something went wrong: ' + err.message;
+  } finally {
+    runBtn.disabled = false;
+  }
+});
+
+document.querySelectorAll('.reviewer-col').forEach(col => {
+  const slug = col.dataset.slug;
+  const fpBtn = col.querySelector('.fingerprint-btn');
+  const fpText = col.querySelector('.fingerprint-text');
+
+  fpBtn.addEventListener('click', async () => {
+    fpBtn.disabled = true;
+    fpText.textContent = 'Synthesizing everything this bank knows…';
+    try {
+      const res = await fetch('/api/fingerprint', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({reviewer_slug: slug})
+      });
+      const data = await res.json();
+      fpText.textContent = data.error ? data.error : data.fingerprint;
+    } catch (err) {
+      fpText.textContent = 'Something went wrong: ' + err.message;
+    } finally {
+      fpBtn.disabled = false;
+    }
+  });
+
+  const submitBtn = col.querySelector('.outcome-submit');
+  const scoreInput = col.querySelector('.outcome-score');
+  const noteInput = col.querySelector('.outcome-note');
+  const statusP = col.querySelector('.outcome-status');
+  const countEl = col.querySelector('.memory-count');
+
+  submitBtn.addEventListener('click', async () => {
+    const actual_score = parseFloat(scoreInput.value);
+    if (!currentSubmissionText) {
+      statusP.textContent = 'Run a prediction first.';
+      return;
+    }
+    if (isNaN(actual_score)) {
+      statusP.textContent = 'Enter the actual score first.';
+      return;
+    }
+
+    submitBtn.disabled = true;
+    statusP.textContent = 'Writing this outcome into memory…';
+
+    try {
+      const res = await fetch('/api/record-outcome', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          reviewer_slug: slug,
+          submission_text: currentSubmissionText,
+          actual_score: actual_score,
+          note: noteInput.value.trim()
+        })
+      });
+      const data = await res.json();
+      if (data.error) { statusP.textContent = data.error; return; }
+
+      countEl.textContent = data.memory_count;
+      statusP.textContent = 'Memory updated — try a related submission now to see the prediction shift.';
+    } catch (err) {
+      statusP.textContent = 'Something went wrong: ' + err.message;
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+});
+</script>
+
+</body>
+</html>
